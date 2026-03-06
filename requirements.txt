@@ -1,0 +1,4 @@
+soundcard
+faster-whisper
+numpy
+google-cloud-speech
