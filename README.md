@@ -3,8 +3,8 @@
 Assists you with interviews by acting as a real-time, smart technical interview coach!
 
 ## Demo
-
-<video src="./demo.mov" controls="controls" width="100%"></video>
+asdad
+![Demo](./demo.png)
 
 ## What it does
 
