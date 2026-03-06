@@ -100,7 +100,61 @@ pip install -r requirements.txt
 pip install soundcard numpy google-cloud-speech google-genai python-dotenv faster-whisper
 ```
 
-## 6. Running the Assistant
+## 6. Optional: Transparent Terminal with Ghostty (macOS)
+
+If you want to use the AI script in a transparent terminal so it can float unobtrusively over your video call, you can use the Ghostty terminal emulator.
+
+1. **Install Ghostty:**
+   ```bash
+   brew install --cask ghostty@tip
+   ```
+   *(Source: https://formulae.brew.sh/cask/ghostty@tip)*
+
+2. **Configure Ghostty:**
+   Ghostty is configured via a text-based configuration file. Create or edit the config file located at `~/Library/Application Support/com.mitchellh.ghostty/config.ghostty` (create the directory if it doesn't exist).
+
+   Add the following configuration for transparency and optimized interview viewing:
+
+   ```ini
+   # Transparency settings
+   background-opacity = 0.0
+   background-blur-radius = 20
+
+   # Window UI settings
+   window-decoration = false
+   confirm-close-surface = false
+   window-padding-balance = true
+
+   # Core Font Settings
+   font-family = "JetBrainsMono Nerd Font Mono"
+   font-size = 16
+   
+   # Fallback Fonts (repeatable for missing glyphs/symbols)
+   # font-family = "Symbols Nerd Font Mono"
+   # font-family = "Noto Sans CJK JP"
+
+   # Font features (ligatures) and styling
+   # font-feature = calt
+   # font-feature = liga
+   
+   # Fine-Tuning Spacing
+   # adjust-cell-height = 2
+   
+   # View available themes with: ghostty +list-themes
+   # theme = <theme-name>
+   
+   # Color mappings (Optional: customize specific ANSI colors if you want to change the AI text color, which uses ANSI green by default)
+   # palette = 2=#00FF00
+   
+   # Custom keybindings (example)
+   # key_map = ctrl+a>n new_tab
+   ```
+
+3. **Usage Tips:**
+   - Reload your config changes instantly with `Cmd+Shift+,`
+   - Adjust opacity on the fly inside the python script using `<` to decrease opacity, and `>` to increase opacity. This natively modifies the `~/Library/Application Support/com.mitchellh.ghostty/config.ghostty` file and triggers an AppleScript to "Reload Configuration" directly in Ghostty.
+
+## 7. Running the Assistant
 
 Once everything is set up:
 1. Ensure your system Audio Output is set to the Multi-Output Device (BlackHole + Headphones).

@@ -100,14 +100,114 @@ def redraw_console():
             else:
                 sys.stdout.write(f"[{l}] 💬 {t}\n")
 
-    if mic_muted:
-        sys.stdout.write("\n[STATUS] 🔇 MIC MUTED (m: unmute | r: retry AI)\n")
-    elif is_paused:
-        sys.stdout.write("\n[STATUS] ⏸️  PAUSE... (m: mute | r: retry AI)\n")
+    is_ghostty = os.environ.get("TERM_PROGRAM") == "ghostty" or os.environ.get("TERM") == "xterm-ghostty"
+    
+    if is_ghostty:
+        controls_str = "m: unmute | r: retry AI | \"<\" or \">\": set opacity higher/lower" if mic_muted else "m: mute | r: retry AI | </>: opacity"
     else:
-        sys.stdout.write("\n[STATUS] 🎙️ LISTENING (m: mute | r: retry AI)\n")
+        controls_str = "m: unmute | r: retry AI" if mic_muted else "m: mute | r: retry AI"
+
+    if mic_muted:
+        sys.stdout.write(f"\n[STATUS] 🔇 MIC MUTED ({controls_str})\n")
+    elif is_paused:
+        sys.stdout.write(f"\n[STATUS] ⏸️  PAUSE... ({controls_str.replace('unmute', 'mute')})\n")
+    else:
+        sys.stdout.write(f"\n[STATUS] 🎙️ LISTENING ({controls_str})\n")
 
     sys.stdout.flush()
+
+in_settings_menu = False
+
+def draw_settings_menu():
+    term_width, term_height = shutil.get_terminal_size((80, 24))
+    sys.stdout.write('\033[2J\033[H')
+    sys.stdout.write("--- GHOSTTY SETTINGS MENU ---\n")
+    sys.stdout.write("1. Font Size (e.g., 14)\n")
+    sys.stdout.write("2. AI Text Color (e.g., #00FF00)\n")
+    sys.stdout.write("3. Font Family (e.g., JetBrains Mono)\n")
+    sys.stdout.write("4. Adjust Cell Height (e.g., 2, 10%)\n")
+    sys.stdout.write("b. Back to Interview\n")
+    sys.stdout.write("\nSelect an option: ")
+    sys.stdout.flush()
+
+def handle_settings_input(option):
+    global in_settings_menu
+    
+    if option.lower() == 'b':
+        in_settings_menu = False
+        redraw_console()
+        return
+
+    mapping = {
+        '1': ('font-size', 'Enter new font-size (e.g. 14, 16): '),
+        '2': ('palette = 2', 'Enter new HEX color for AI (e.g. #00FF00, #FF00FF): '),
+        '3': ('font-family', 'Enter new font-family (e.g. "JetBrains Mono"): '),
+        '4': ('adjust-cell-height', 'Enter new cell height (e.g. 2, 10%): '),
+    }
+    
+    if option in mapping:
+        key, prompt = mapping[option]
+        sys.stdout.write(f"\n{prompt}")
+        sys.stdout.flush()
+        
+        # Disable cbreak temporarily to allow normal input
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            val = input().strip()
+            if val:
+                update_ghostty_config_key(key, val)
+        finally:
+            tty.setcbreak(fd)
+            
+        draw_settings_menu()
+    else:
+        draw_settings_menu()
+
+def update_ghostty_config_key(key, value):
+    config_dir = os.path.expanduser("~/Library/Application Support/com.mitchellh.ghostty")
+    config_path = os.path.join(config_dir, "config.ghostty")
+    
+    try:
+        import re
+        import subprocess
+        
+        if not os.path.exists(config_dir):
+            os.makedirs(config_dir)
+            
+        content = ""
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                content = f.read()
+                
+        # Handle the special palette key
+        if key == 'palette = 2':
+            pattern = r'^palette\s*=\s*2\s*=.*$'
+            new_line = f"palette = 2={value}"
+        else:
+            pattern = rf'^{re.escape(key)}\s*=.*$'
+            new_line = f"{key} = {value}"
+            
+        match = re.search(pattern, content, re.MULTILINE)
+        if match:
+            content = re.sub(pattern, new_line, content, flags=re.MULTILINE)
+        else:
+            if content and not content.endswith('\n'):
+                content += '\n'
+            content += f"{new_line}\n"
+            
+        with open(config_path, 'w') as f:
+            f.write(content)
+            
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.scpt', delete=False) as temp_script:
+            temp_script.write('tell application "System Events" to tell process "Ghostty" to click menu item "Reload Configuration" of menu "Ghostty" of menu bar item "Ghostty" of menu bar 1')
+            temp_script_path = temp_script.name
+            
+        os.system(f"osascript {temp_script_path} >/dev/null 2>&1 && rm {temp_script_path} &")
+    except Exception:
+        pass
 
 
 def thread_safe_print(label, text, is_final=False):
@@ -428,6 +528,14 @@ def key_listener():
             r, _, _ = select.select([sys.stdin], [], [], 0.1)
             if r:
                 char = sys.stdin.read(1)
+                is_ghostty = os.environ.get("TERM_PROGRAM") == "ghostty" or os.environ.get("TERM") == "xterm-ghostty"
+
+                # if in_settings_menu:
+                #     handle_settings_input(char)
+                # elif char.lower() == 's' and is_ghostty:
+                #     in_settings_menu = True
+                #     draw_settings_menu()
+                # el
                 if char.lower() == 'm':
                     mic_muted = not mic_muted
                     with print_lock:
@@ -439,6 +547,62 @@ def key_listener():
                         gemini_triggered = True
                     t = threading.Thread(target=gemini_comment_stream, args=(thread_id,), daemon=True)
                     t.start()
+                elif (char == '<' or char == '>') and is_ghostty:
+                    # Instead of using subprocess which forks and crashes gRPC, 
+                    # create a background thread to update the config and reload Ghostty
+                    def update_ghostty_opacity(char_pressed):
+                        # Use the specific config path for macOS Ghostty app
+                        config_dir = os.path.expanduser("~/Library/Application Support/com.mitchellh.ghostty")
+                        config_path = os.path.join(config_dir, "config.ghostty")
+                        
+                        try:
+                            import re
+                            import subprocess
+                            
+                            if not os.path.exists(config_dir):
+                                os.makedirs(config_dir)
+                                
+                            content = ""
+                            if os.path.exists(config_path):
+                                with open(config_path, 'r') as f:
+                                    content = f.read()
+                            
+                            current_opacity = 0.0
+                            match = re.search(r'^background-opacity\s*=\s*([0-9.]+)', content, re.MULTILINE)
+                            if match:
+                                current_opacity = float(match.group(1))
+                            
+                            if char_pressed == '<':
+                                new_opacity = max(0.0, current_opacity - 0.1)
+                            else:
+                                new_opacity = min(1.0, current_opacity + 0.1)
+                                
+                            new_opacity_str = f"{new_opacity:.1f}"
+                            
+                            if match:
+                                content = re.sub(r'^background-opacity\s*=\s*[0-9.]+', f'background-opacity = {new_opacity_str}', content, flags=re.MULTILINE)
+                            else:
+                                if content and not content.endswith('\n'):
+                                    content += '\n'
+                                content += f'background-opacity = {new_opacity_str}\n'
+                                
+                            with open(config_path, 'w') as f:
+                                f.write(content)
+                                
+                            # Write the AppleScript to a temporary file, and use os.system in the background using '&'
+                            # to avoid any fork() issues caused by Python's subprocess module interacting with gRPC.
+                            import tempfile
+                            with tempfile.NamedTemporaryFile(mode='w', suffix='.scpt', delete=False) as temp_script:
+                                temp_script.write('tell application "System Events" to tell process "Ghostty" to click menu item "Reload Configuration" of menu "Ghostty" of menu bar item "Ghostty" of menu bar 1')
+                                temp_script_path = temp_script.name
+                                
+                            os.system(f"osascript {temp_script_path} >/dev/null 2>&1 && rm {temp_script_path} &")
+                        except Exception:
+                            pass
+                            
+                    # Using a thread wasn't enough to bypass gRPC's aggressive fork() handlers in subprocess.
+                    # We run update_ghostty_opacity directly, but inside it we use `os.system("... &")` to detach.
+                    update_ghostty_opacity(char)
                 elif char == '\x03': # Ctrl+C
                     os.kill(os.getpid(), signal.SIGINT)
                     break
