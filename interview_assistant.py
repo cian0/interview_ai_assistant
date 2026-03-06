@@ -8,6 +8,9 @@ from google.genai import types
 import time
 import sys
 import os
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.text import Text
 import shutil
 import select
 import tty
@@ -44,6 +47,7 @@ sys_q = queue.Queue()
 
 # --- Printing ---
 print_lock = threading.Lock()
+console = Console()
 
 transcript_history = []
 active_interims = {}
@@ -80,25 +84,36 @@ def normalize_audio(audio: np.ndarray) -> np.ndarray:
 def redraw_console():
     term_width, term_height = shutil.get_terminal_size((80, 24))
     num_interims = len(active_interims)
-    max_history_lines = max(5, term_height - num_interims - 5)
-
+    
+    # We will print everything using rich console to handle markdown
     sys.stdout.write('\033[2J\033[H')
-    sys.stdout.write("Streaming to Google STT + Gemini AI... Press Ctrl+C to stop.\n")
-    sys.stdout.write("-" * min(term_width, 80) + "\n")
+    console.print("Streaming to Google STT + Gemini AI... Press Ctrl+C to stop.")
+    console.print("-" * min(term_width, 80))
 
-    for line in transcript_history[-max_history_lines:]:
+    # To avoid taking up too much vertical space, we only show recent history
+    # But because markdown might span multiple lines, we just take the last few entries
+    # instead of exact line count. Let's take the last 5 entries.
+    for line in transcript_history[-5:]:
         if "[🤖 AI]" in line:
-            sys.stdout.write(f"\033[92m{line}\033[0m\n")
+            # Extract the actual text by removing the label part
+            # line looks like "[🤖 AI] ✅ Some text" or just "[🤖 AI] Some text"
+            label = "[🤖 AI] ✅" if "✅" in line else "[🤖 AI]"
+            text_part = line.replace(label, "").strip()
+            
+            console.print(f"[bold green]{label}[/bold green]")
+            console.print(Markdown(text_part, style="green"))
+            console.print("") # spacing
         else:
-            sys.stdout.write(f"{line}\n")
+            console.print(line)
 
     if active_interims:
-        sys.stdout.write("\n")
+        console.print("\n")
         for l, t in active_interims.items():
             if l == "🤖 AI":
-                sys.stdout.write(f"\033[92m[{l}] 💬 {t}\033[0m\n")
+                console.print(f"[bold green][{l}] 💬[/bold green]")
+                console.print(Markdown(t, style="green"))
             else:
-                sys.stdout.write(f"[{l}] 💬 {t}\n")
+                console.print(f"[{l}] 💬 {t}")
 
     is_ghostty = os.environ.get("TERM_PROGRAM") == "ghostty" or os.environ.get("TERM") == "xterm-ghostty"
     
@@ -108,13 +123,11 @@ def redraw_console():
         controls_str = "m: unmute | r: retry AI" if mic_muted else "m: mute | r: retry AI"
 
     if mic_muted:
-        sys.stdout.write(f"\n[STATUS] 🔇 MIC MUTED ({controls_str})\n")
+        console.print(f"\n[STATUS] 🔇 MIC MUTED ({controls_str})")
     elif is_paused:
-        sys.stdout.write(f"\n[STATUS] ⏸️  PAUSE... ({controls_str.replace('unmute', 'mute')})\n")
+        console.print(f"\n[STATUS] ⏸️  PAUSE... ({controls_str.replace('unmute', 'mute')})")
     else:
-        sys.stdout.write(f"\n[STATUS] 🎙️ LISTENING ({controls_str})\n")
-
-    sys.stdout.flush()
+        console.print(f"\n[STATUS] 🎙️ LISTENING ({controls_str})")
 
 in_settings_menu = False
 

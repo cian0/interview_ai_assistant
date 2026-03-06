@@ -2,6 +2,10 @@
 
 Assists you with interviews by acting as a real-time, smart technical interview coach!
 
+## Demo
+
+<video src="./demo.mov" controls="controls" width="100%"></video>
+
 ## What it does
 
 This Python script (`interview_assistant.py`) streams audio from both your microphone (you) and your system audio (the interviewer) to provide real-time transcriptions and AI-generated coaching advice. 
@@ -13,6 +17,8 @@ This Python script (`interview_assistant.py`) streams audio from both your micro
 - **Manual Controls:** During the stream, you can use hotkeys directly in the terminal:
   - `m`: Mute / Unmute your microphone.
   - `r`: Force Gemini to retry generating advice based on the current context.
+
+**Pro-tip for Terminal users:** If you're using a modern terminal like Ghostty, you can make the window float on top of all other windows while interviewing. Just go to `Window > Float on Top` in your terminal's menu bar.
 
 ## APIs Used & Cost Warning
 

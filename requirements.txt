@@ -2,3 +2,6 @@ soundcard
 faster-whisper
 numpy
 google-cloud-speech
+google-genai
+python-dotenv
+rich
