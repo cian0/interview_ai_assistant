@@ -42,4 +42,5 @@ For a complete walkthrough on how to install BlackHole (loopback audio), configu
 4. Run the script:
    - For Google Cloud STT: `python interview_assistant.py`
    - For free local STT: `python interview_assistant.py --use-whisper`
+   - **Linux Users:** If the system audio capture fails to find your device automatically, pass the name of your system loopback device: `python interview_assistant.py --sys-audio-device "Monitor of Built-in Audio Analog Stereo"`
 5. The terminal will start displaying the real-time transcript and AI coaching notes. Press `Ctrl+C` to stop.

@@ -10,9 +10,11 @@ This guide covers everything you need to set up to get the `interview_assistant.
 - **Python:** Python 3.8 or higher.
 - **Terminal:** Any standard terminal or command prompt (the script features an interactive UI that works well in most modern terminal emulators).
 
-## 2. Audio Routing Setup (macOS)
+## 2. Audio Routing Setup (macOS & Linux)
 
-To capture the interviewer's voice (the audio coming out of your speakers/headphones), the script needs a "loopback" virtual audio device. On macOS, this is commonly done using **BlackHole**.
+To capture the interviewer's voice (the audio coming out of your speakers/headphones), the script needs a "loopback" virtual audio device.
+
+### macOS (Using BlackHole)
 
 1. **Install BlackHole:**
    - Using Homebrew (recommended):
@@ -34,6 +36,14 @@ To capture the interviewer's voice (the audio coming out of your speakers/headph
 3. **Select your Audio Output:**
    - In your System Settings or by clicking the volume icon in your macOS menu bar, change your system's Audio Output to the **Multi-Output Device** you just created.
    - Now, any audio played by your computer (e.g., Google Meet, Zoom) will go to both your headphones and to BlackHole.
+
+### Linux (Using PulseAudio/PipeWire)
+On most modern Linux distributions using PulseAudio or PipeWire, you can capture the audio going to your speakers using a "Monitor" device.
+
+1. Find your default output device monitor:
+   - Use `pactl list short sources` or `pw-record --list-targets` and look for devices ending in `.monitor`.
+2. The script will automatically try to find a device containing the word "Monitor" or "Loopback". 
+3. If it fails, you can specify the exact device name using the `--sys-audio-device` argument when running the script.
 
 ## 3. API Credentials & Local STT Setup
 
@@ -157,7 +167,7 @@ If you want to use the AI script in a transparent terminal so it can float unobt
 ## 7. Running the Assistant
 
 Once everything is set up:
-1. Ensure your system Audio Output is set to the Multi-Output Device (BlackHole + Headphones).
+1. Ensure your system Audio Output is set to the correct loopback/monitor setup (e.g., Multi-Output Device on macOS).
 2. Run the script:
    - For Google Cloud STT:
      ```bash
@@ -166,5 +176,9 @@ Once everything is set up:
    - For free local STT:
      ```bash
      python interview_assistant.py --use-whisper
+     ```
+   - **Linux Users:** If the script cannot automatically find your system audio device, specify it explicitly:
+     ```bash
+     python interview_assistant.py --sys-audio-device "Monitor of Built-in Audio Analog Stereo"
      ```
 3. The terminal will clear and show a live stream. You will see `🎙 ME` for your voice, `🔊 THEM` for the system audio (BlackHole), and `🤖 AI` for the Gemini coaching tips!

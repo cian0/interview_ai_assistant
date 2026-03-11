@@ -17,6 +17,7 @@ import tty
 import termios
 import signal
 import argparse
+import platform
 from dotenv import load_dotenv
 
 try:
@@ -179,8 +180,14 @@ def handle_settings_input(option):
         draw_settings_menu()
 
 def update_ghostty_config_key(key, value):
-    config_dir = os.path.expanduser("~/Library/Application Support/com.mitchellh.ghostty")
-    config_path = os.path.join(config_dir, "config.ghostty")
+    # macOS typical path. For Linux, Ghostty usually uses ~/.config/ghostty/config
+    is_mac = platform.system() == "Darwin"
+    if is_mac:
+        config_dir = os.path.expanduser("~/Library/Application Support/com.mitchellh.ghostty")
+    else:
+        config_dir = os.path.expanduser("~/.config/ghostty")
+        
+    config_path = os.path.join(config_dir, "config" if not is_mac else "config.ghostty")
     
     try:
         import re
@@ -213,13 +220,18 @@ def update_ghostty_config_key(key, value):
         with open(config_path, 'w') as f:
             f.write(content)
             
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.scpt', delete=False) as temp_script:
-            temp_script.write('tell application "System Events" to tell process "Ghostty" to click menu item "Reload Configuration" of menu "Ghostty" of menu bar item "Ghostty" of menu bar 1')
-            temp_script_path = temp_script.name
-            
-        os.system(f"osascript {temp_script_path} >/dev/null 2>&1 && rm {temp_script_path} &")
-    except Exception:
+        if is_mac:
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.scpt', delete=False) as temp_script:
+                temp_script.write('tell application "System Events" to tell process "Ghostty" to click menu item "Reload Configuration" of menu "Ghostty" of menu bar item "Ghostty" of menu bar 1')
+                temp_script_path = temp_script.name
+                
+            os.system(f"osascript {temp_script_path} >/dev/null 2>&1 && rm {temp_script_path} &")
+        else:
+            # On Linux, Ghostty auto-reloads or requires manual reload. We just write the config.
+            pass
+    except Exception as e:
+        print(f"Error updating config: {e}")
         pass
 
 
@@ -407,7 +419,7 @@ def capture_mic():
         print(f"[MIC] Error: {e}")
 
 
-def capture_system():
+def capture_system(sys_audio_device=None):
     try:
         try:
             speaker = sc.default_speaker()
@@ -416,8 +428,21 @@ def capture_system():
             loopback = None
 
         if loopback is None:
-            loopback = next(m for m in sc.all_microphones(include_loopback=True)
-                            if "BlackHole" in m.name)
+            all_mics = sc.all_microphones(include_loopback=True)
+            if sys_audio_device:
+                loopback = next((m for m in all_mics if sys_audio_device.lower() in m.name.lower()), None)
+            
+            if loopback is None:
+                # Fallback OS-specific defaults
+                if platform.system() == "Darwin":
+                    loopback = next((m for m in all_mics if "BlackHole" in m.name), None)
+                elif platform.system() == "Linux":
+                    # Look for PulseAudio/PipeWire monitor devices
+                    loopback = next((m for m in all_mics if "Monitor" in m.name or "Loopback" in m.name), None)
+
+        if loopback is None:
+            print("[SYS] Error: System audio loopback device not found.")
+            return
 
         print(f"[SYS] Capturing from: {loopback.name}")
         
@@ -564,10 +589,14 @@ def key_listener():
                     # Instead of using subprocess which forks and crashes gRPC, 
                     # create a background thread to update the config and reload Ghostty
                     def update_ghostty_opacity(char_pressed):
-                        # Use the specific config path for macOS Ghostty app
-                        config_dir = os.path.expanduser("~/Library/Application Support/com.mitchellh.ghostty")
-                        config_path = os.path.join(config_dir, "config.ghostty")
-                        
+                        is_mac = platform.system() == "Darwin"
+                        if is_mac:
+                            config_dir = os.path.expanduser("~/Library/Application Support/com.mitchellh.ghostty")
+                            config_path = os.path.join(config_dir, "config.ghostty")
+                        else:
+                            config_dir = os.path.expanduser("~/.config/ghostty")
+                            config_path = os.path.join(config_dir, "config")
+                            
                         try:
                             import re
                             import subprocess
@@ -602,19 +631,18 @@ def key_listener():
                             with open(config_path, 'w') as f:
                                 f.write(content)
                                 
-                            # Write the AppleScript to a temporary file, and use os.system in the background using '&'
-                            # to avoid any fork() issues caused by Python's subprocess module interacting with gRPC.
-                            import tempfile
-                            with tempfile.NamedTemporaryFile(mode='w', suffix='.scpt', delete=False) as temp_script:
-                                temp_script.write('tell application "System Events" to tell process "Ghostty" to click menu item "Reload Configuration" of menu "Ghostty" of menu bar item "Ghostty" of menu bar 1')
-                                temp_script_path = temp_script.name
-                                
-                            os.system(f"osascript {temp_script_path} >/dev/null 2>&1 && rm {temp_script_path} &")
+                            if is_mac:
+                                # Write the AppleScript to a temporary file, and use os.system in the background using '&'
+                                # to avoid any fork() issues caused by Python's subprocess module interacting with gRPC.
+                                import tempfile
+                                with tempfile.NamedTemporaryFile(mode='w', suffix='.scpt', delete=False) as temp_script:
+                                    temp_script.write('tell application "System Events" to tell process "Ghostty" to click menu item "Reload Configuration" of menu "Ghostty" of menu bar item "Ghostty" of menu bar 1')
+                                    temp_script_path = temp_script.name
+                                    
+                                os.system(f"osascript {temp_script_path} >/dev/null 2>&1 && rm {temp_script_path} &")
                         except Exception:
                             pass
                             
-                    # Using a thread wasn't enough to bypass gRPC's aggressive fork() handlers in subprocess.
-                    # We run update_ghostty_opacity directly, but inside it we use `os.system("... &")` to detach.
                     update_ghostty_opacity(char)
                 elif char == '\x03': # Ctrl+C
                     os.kill(os.getpid(), signal.SIGINT)
@@ -628,6 +656,7 @@ def key_listener():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI Interview Assistant")
     parser.add_argument("--use-whisper", action="store_true", help="Use faster-whisper instead of Google STT")
+    parser.add_argument("--sys-audio-device", type=str, default=None, help="Name of the system audio loopback device (e.g., 'BlackHole', 'Monitor', etc.)")
     args = parser.parse_args()
 
     USE_WHISPER = args.use_whisper
@@ -640,7 +669,7 @@ if __name__ == "__main__":
 
     threads = [
         threading.Thread(target=capture_mic, daemon=True),
-        threading.Thread(target=capture_system, daemon=True),
+        threading.Thread(target=capture_system, args=(args.sys_audio_device,), daemon=True),
         threading.Thread(target=transcribe_target, args=(mic_q, "🎙 ME"), daemon=True),
         threading.Thread(target=transcribe_target, args=(sys_q, "🔊 THEM"), daemon=True),
         threading.Thread(target=pause_monitor, daemon=True),
