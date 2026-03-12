@@ -1,3 +1,4 @@
 .env
 .gitattributes
 *.pyc
+chat_debug.log

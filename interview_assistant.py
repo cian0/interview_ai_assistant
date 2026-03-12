@@ -19,6 +19,7 @@ import signal
 import argparse
 import platform
 from dotenv import load_dotenv
+from PIL import ImageGrab
 
 try:
     from faster_whisper import WhisperModel
@@ -29,7 +30,9 @@ except ImportError:
 # --- Config ---
 SAMPLE_RATE = 16000
 CHUNK_FRAMES = int(SAMPLE_RATE * 0.1)
-GEMINI_MODEL = "gemini-3.1-flash-lite-preview"  # Latest Gemini 2.5 Pro
+
+AVAILABLE_MODELS = ["gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview"]
+GEMINI_MODEL = AVAILABLE_MODELS[0]
 
 # Whisper Config
 WHISPER_CHUNK_SEC = 5
@@ -59,6 +62,9 @@ gemini_triggered = False  # prevent double-firing per pause
 current_gemini_thread_id = 0  # To track and cancel superseded streams
 load_dotenv()
 gemini_client = genai.Client()
+
+captured_screenshots = []
+active_chat_session = None
 
 USE_WHISPER = False
 whisper_model = None
@@ -100,9 +106,12 @@ def redraw_console():
             # line looks like "[🤖 AI] ✅ Some text" or just "[🤖 AI] Some text"
             label = "[🤖 AI] ✅" if "✅" in line else "[🤖 AI]"
             text_part = line.replace(label, "").strip()
-            
+
             console.print(f"[bold green]{label}[/bold green]")
             console.print(Markdown(text_part, style="green"))
+            console.print("") # spacing
+        elif "[🗣️ YOU ASKED]" in line:
+            console.print(f"[bold cyan]{line}[/bold cyan]")
             console.print("") # spacing
         else:
             console.print(line)
@@ -117,20 +126,26 @@ def redraw_console():
                 console.print(f"[{l}] 💬 {t}")
 
     is_ghostty = os.environ.get("TERM_PROGRAM") == "ghostty" or os.environ.get("TERM") == "xterm-ghostty"
-    
+
+    screenshot_str = f" | {len(captured_screenshots)} 📸" if captured_screenshots else ""
+    chat_hist_str = ""
+
     if is_ghostty:
-        controls_str = "m: unmute | r: retry AI | \"<\" or \">\": set opacity higher/lower" if mic_muted else "m: mute | r: retry AI | </>: opacity"
+        controls_str = f"m: unmute | r: retry AI | a: ask AI | s: switch model | p: snap screen | c: clear screens | \"<\" or \">\": opacity{screenshot_str}{chat_hist_str}" if mic_muted else f"m: mute | r: retry AI | a: ask AI | s: switch model | p: snap screen | c: clear screens | </>{screenshot_str}{chat_hist_str}"
     else:
-        controls_str = "m: unmute | r: retry AI" if mic_muted else "m: mute | r: retry AI"
+        controls_str = f"m: unmute | r: retry AI | a: ask AI | s: switch model | p: snap screen | c: clear screens{screenshot_str}{chat_hist_str}" if mic_muted else f"m: mute | r: retry AI | a: ask AI | s: switch model | p: snap screen | c: clear screens{screenshot_str}{chat_hist_str}"
+
+    model_name = "Pro" if "pro" in GEMINI_MODEL else "Flash"
 
     if mic_muted:
-        console.print(f"\n[STATUS] 🔇 MIC MUTED ({controls_str})")
+        console.print(f"\n[STATUS] 🔇 MIC MUTED ({controls_str}) | 🧠 {model_name}")
     elif is_paused:
-        console.print(f"\n[STATUS] ⏸️  PAUSE... ({controls_str.replace('unmute', 'mute')})")
+        console.print(f"\n[STATUS] ⏸️  PAUSE... ({controls_str.replace('unmute', 'mute')}) | 🧠 {model_name}")
     else:
-        console.print(f"\n[STATUS] 🎙️ LISTENING ({controls_str})")
+        console.print(f"\n[STATUS] 🎙️ LISTENING ({controls_str}) | 🧠 {model_name}")
 
 in_settings_menu = False
+in_ask_mode_input = False
 
 def draw_settings_menu():
     term_width, term_height = shutil.get_terminal_size((80, 24))
@@ -250,7 +265,8 @@ def thread_safe_print(label, text, is_final=False):
         else:
             active_interims[label] = text
 
-        redraw_console()
+        if not in_ask_mode_input:
+            redraw_console()
 
 
 def build_conversation_context():
@@ -307,13 +323,13 @@ def build_conversation_context():
     return "\n".join(recent)
 
 
-def gemini_comment_stream(thread_id):
+def gemini_comment_stream(thread_id, ask_question=None):
     """Runs in its own thread. Streams a Gemini comment as a fake STT speaker."""
-    global gemini_triggered
+    global gemini_triggered, captured_screenshots, active_chat_session
 
     context = build_conversation_context()
-        
-    if not context:
+
+    if not context and not ask_question:
         return
 
     label = "🤖 AI"
@@ -327,19 +343,84 @@ def gemini_comment_stream(thread_id):
         "Keep your advice concise, SIMPLIFY your suggested answers using bullet points. Let the reader expand on the simple bullet points instead of explaining it thoroughly. Each bullet point should have a maximum of 10 words only, hence use keywords and queues that can easily be picked up"
         "Be direct and helpful. IMPORTANT: Always write complete sentences and never trail off or end mid-thought."
     )
-    user_prompt = f"Conversation (newest to oldest):\n{context}\n\nGive your coaching advice and suggested answer now."
+
+    if ask_question:
+        # Override the system prompt during Ask mode to be more helpful and detailed
+        # instead of the restrictive bullet-point coach mode.
+        system_prompt = (
+            "You are an expert programmer and technical interview coach. "
+            "When given a problem, question, or screenshot, explain the logic and your reasoning clearly. "
+            "Provide complete, working code solutions when applicable with comments. "
+            "Use markdown formatting with headers and code blocks."
+        )
+
+        full_context = "\n".join(transcript_history)
+        context_text = f"Full Session Transcript:\n{full_context}\n\n" if full_context else "No conversation history yet.\n\n"
+
+        if captured_screenshots:
+            user_prompt = f"{context_text}The user directly asked you this question: '{ask_question}'. Please answer their question directly, using the conversation context and the {len(captured_screenshots)} provided screenshots if needed."
+            with print_lock:
+                transcript_history.append(f"[🗣️ YOU ASKED] {ask_question} ({len(captured_screenshots)} screenshots)")
+                redraw_console()
+
+            contents = []
+            for img in captured_screenshots:
+                contents.append(img)
+            contents.append(user_prompt)
+            captured_screenshots.clear()
+        else:
+            user_prompt = f"{context_text}The user directly asked you this question: '{ask_question}'. Please answer their question directly, using the conversation context if needed."
+            with print_lock:
+                transcript_history.append(f"[🗣️ YOU ASKED] {ask_question}")
+                redraw_console()
+
+            contents = user_prompt
+    else:
+        user_prompt = f"Conversation (newest to oldest):\n{context}\n\nGive your coaching advice and suggested answer now."
+        contents = user_prompt
 
     try:
         accumulated = ""
-        for chunk in gemini_client.models.generate_content_stream(
-            model=GEMINI_MODEL,
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
+
+        if ask_question:
+            # Use Ask mode config
+            generate_config = types.GenerateContentConfig(
                 system_instruction=system_prompt,
-                temperature=0.7,
-                max_output_tokens=800,
-            ),
-        ):
+                max_output_tokens=8192*2 if "pro" in GEMINI_MODEL.lower() else 800,
+                thinking_config=types.ThinkingConfig(thinking_budget=-1) if "pro" in GEMINI_MODEL.lower() else None
+            )
+
+            # We use stateless stream with the full history as context injected manually
+            stream = gemini_client.models.generate_content_stream(
+                model=GEMINI_MODEL,
+                contents=contents,
+                config=generate_config
+            )
+        else:
+            # Prepare config based on model type
+            config_kwargs = {
+                "system_instruction": system_prompt,
+                "max_output_tokens": 800,
+            }
+
+            # If it's a Pro model, configure the thinking parameters to make it concise
+            if "pro" in GEMINI_MODEL.lower():
+                # During normal coaching mode, we enforce concise answers
+                config_kwargs["system_instruction"] = system_prompt + "\nBe extremely concise. No fluff. Give clear, brief answers."
+                config_kwargs["max_output_tokens"] = 2000 # keep it short
+                config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=8192)
+
+            generate_config = types.GenerateContentConfig(**config_kwargs)
+            
+            # Normal stateless coaching stream
+            # DO NOT use chats.create() here, use generate_content_stream so it remains stateless
+            stream = gemini_client.models.generate_content_stream(
+                model=GEMINI_MODEL,
+                contents=contents,
+                config=generate_config,
+            )
+
+        for chunk in stream:
             if current_gemini_thread_id != thread_id:
                 # User started speaking, cancel this stream
                 break
@@ -382,15 +463,17 @@ def pause_monitor():
             elapsed = time.time() - last_update_time
             if not is_paused and elapsed > 0.5:
                 is_paused = True
-                redraw_console()
+                if not in_ask_mode_input:
+                    redraw_console()
 
             # Trigger Gemini once per pause, after GEMINI_PAUSE_THRESHOLD seconds
             if is_paused and not gemini_triggered and elapsed > GEMINI_PAUSE_THRESHOLD:
                 gemini_triggered = True  # lock to prevent re-triggering
-                # Launch in a separate thread so pause_monitor stays non-blocking
-                thread_id = current_gemini_thread_id
-                t = threading.Thread(target=gemini_comment_stream, args=(thread_id,), daemon=True)
-                t.start()
+                if not in_ask_mode_input:
+                    # Launch in a separate thread so pause_monitor stays non-blocking
+                    thread_id = current_gemini_thread_id
+                    t = threading.Thread(target=gemini_comment_stream, args=(thread_id,), daemon=True)
+                    t.start()
 
 
 def capture_mic():
@@ -557,7 +640,7 @@ def transcribe_stream(audio_queue, label):
 
 
 def key_listener():
-    global mic_muted, current_gemini_thread_id, gemini_triggered
+    global mic_muted, current_gemini_thread_id, gemini_triggered, in_ask_mode_input
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     try:
@@ -585,6 +668,63 @@ def key_listener():
                         gemini_triggered = True
                     t = threading.Thread(target=gemini_comment_stream, args=(thread_id,), daemon=True)
                     t.start()
+                elif char.lower() == 's':
+                    global GEMINI_MODEL
+                    current_idx = AVAILABLE_MODELS.index(GEMINI_MODEL)
+                    next_idx = (current_idx + 1) % len(AVAILABLE_MODELS)
+                    GEMINI_MODEL = AVAILABLE_MODELS[next_idx]
+                    with print_lock:
+                        transcript_history.append(f"[STATUS] Switched model to {GEMINI_MODEL}")
+                        redraw_console()
+                elif char.lower() == 'p':
+                    # Capture a screenshot silently
+                    screenshot = ImageGrab.grab()
+                    screenshot.thumbnail((1024, 1024))
+                    captured_screenshots.append(screenshot)
+                    with print_lock:
+                        redraw_console()
+                elif char.lower() == 'c':
+                    # Clear all captured screenshots AND the active chat session
+                    captured_screenshots.clear()
+                    with print_lock:
+                        transcript_history.clear()
+                        active_interims.clear()
+                        transcript_history.append("[STATUS] 🗑️ Cleared all context, history, and screenshots.")
+                        redraw_console()
+                elif char.lower() == 'a':
+                    # Ask mode: disable cbreak, loop asking for input until 'x' or 'exit'
+                    try:
+                        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                        while True:
+                            in_ask_mode_input = True
+                            sys.stdout.write("\n\033[93m[ASK AI]\033[0m Enter your question (or 'x'/'exit' to quit): ")
+                            sys.stdout.flush()
+                            question = input().strip()
+                            in_ask_mode_input = False
+
+                            if question.lower() in ['x', 'exit', 'quit']:
+                                with print_lock:
+                                    transcript_history.append("[STATUS] 🚪 Exited Ask Mode.")
+                                    redraw_console()
+                                break
+
+                            if question or captured_screenshots:
+                                with print_lock:
+                                    current_gemini_thread_id += 1
+                                    thread_id = current_gemini_thread_id
+                                    gemini_triggered = True
+
+                                # We run the Gemini request and wait for it to finish, so the response
+                                # streams into the UI cleanly before we prompt for the next question.
+                                t = threading.Thread(target=gemini_comment_stream, args=(thread_id, question), daemon=True)
+                                t.start()
+                                t.join()
+                            else:
+                                with print_lock:
+                                    redraw_console()
+                    finally:
+                        in_ask_mode_input = False
+                        tty.setcbreak(fd)
                 elif (char == '<' or char == '>') and is_ghostty:
                     # Instead of using subprocess which forks and crashes gRPC, 
                     # create a background thread to update the config and reload Ghostty
